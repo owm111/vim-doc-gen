@@ -11,23 +11,51 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of 
-    "functions":_ -> getContents >>= (putStrLn . parseAndFormat parseFunctionLine flToDescribed formatDescribedFunction)
-    "commands":_ -> getContents >>= (putStrLn . parseAndFormat parseCommandLine clToDescribed formatDescribedCommand)
-    "syntax":_ -> getContents >>= (putStrLn . parseAndFormat parseSyntaxLine slToDescribed formatDescribedSyntax)
-    _ -> hPutStrLn stderr "Wrong arguments!"
+    "functions":_ -> go parseFunctionLine flToDescribed "" dfToTriple
+    "commands":_  -> go parseCommandLine clToDescribed ":" dcToTriple
+    "syntax":_    -> go parseSyntaxLine slToDescribed "hl-" dsToTriple
+    _             -> hPutStrLn stderr "Wrong arguments!"
+  where go parse describe prefix triplify = getContents >>= (putStrLn . parseAndFormat 78 3 30 parse describe prefix triplify)
 
 parseAndFormat
-  :: (Ord described, Show described, Show line)
-  => (String -> line) -> ([line] -> [described]) -> (described -> String) -> String -> String
-parseAndFormat parseLineF foldF formatF file = unlines (sort (map formatF (foldF (map (parseLineF) (lines file)))))
+  :: Ord described
+  => Int
+  -> Int
+  -> Int
+  -> (String -> line)
+  -> ([line] -> [described])
+  -> String
+  -> (described -> (String, String, String))
+  -> String
+  -> String
+parseAndFormat tw tagPad descPad parseLineF foldF tagPrefix prepareDesc file =
+  unlines (sort (map (formatF . prepareDesc) (foldF (map (parseLineF) (lines file)))))
+  where formatF (x,y,z) = mkFormatter tw tagPad descPad tagPrefix x y z
 
--- * Functions
+-- * Types
+
+-- ** Lines
 
 data FunctionsLine
   = FLEmpty
   | FLComment String
   | FLFunction String [String]
   deriving (Eq, Show)
+
+data CommandsLine
+  = CLEmpty
+  | CLComment String
+  | CLArguments String
+  | CLCommand String
+  deriving (Eq, Show)
+
+data SyntaxLine
+  = SLEmpty
+  | SLComment String
+  | SLSyntax String
+  deriving (Eq, Show)
+
+-- ** Described
 
 data DescribedFunction
   = DescribedFunction
@@ -36,28 +64,46 @@ data DescribedFunction
   , dfDesc :: String
   } deriving (Eq, Show)
 
-instance Ord DescribedFunction where
-  compare = comparing dfName
+data DescribedCommand
+  = DescribedCommand
+  { dcName :: String
+  , dcArgs :: Maybe String
+  , dcDesc :: String
+  } deriving (Eq, Show)
 
-parseFunctionLine :: String -> FunctionsLine
-parseFunctionLine x =
-  case readP_to_S flFunctionParser x of
-    [(flFunction, "")] -> flFunction
-    _ ->
-      case readP_to_S flCommentParser x of
-        [(flComment, "")] -> flComment
-        _ -> FLEmpty
+data DescribedSyntax
+  = DescribedSyntax
+  { dsName :: String
+  , dsDesc :: String
+  } deriving (Eq, Show)
 
-flCommentParser = do
+instance Ord DescribedFunction where compare = comparing dfName
+instance Ord DescribedCommand where compare = comparing dcName
+instance Ord DescribedSyntax where compare = comparing dsName
+
+-- * Parsers
+
+simpleCommentParser :: (String -> a) -> ReadP a
+simpleCommentParser f = do
   char '"'
   skipSpaces
   comment <- many1 get
   eof
-  return (FLComment comment)
+  return (f comment)
 
+flCommentParser :: ReadP FunctionsLine
+flCommentParser = simpleCommentParser FLComment
+
+clCommentParser :: ReadP CommandsLine
+clCommentParser = simpleCommentParser CLComment
+
+slCommentParser :: ReadP SyntaxLine
+slCommentParser = simpleCommentParser SLComment
+
+flFunctionParser :: ReadP FunctionsLine
 flFunctionParser = do
-  string "function "
-  skipSpaces
+  string "function"
+  skipSpaces1
   fnName <- many1 (satisfy (`notElem` " ("))
   skipSpaces
   openParen
@@ -73,82 +119,23 @@ flFunctionParser = do
         openParen = char '('
         closeParen = char ')'
 
-flToDescribed :: [FunctionsLine] -> [DescribedFunction]
-flToDescribed xs = fst $ foldl g ([],[]) xs
-  where g (res, _       ) FLEmpty           = (res, [])
-        g (res, comments) (FLComment c)     = (res, comments ++ [c])
-        g (res, comments) (FLFunction f as) = (res ++ [DescribedFunction f as (unwords comments)], [])
-
-formatDescribedFunction (DescribedFunction name args description) =
-  tagSpacing ++ tag ++ "\n" ++ functionCall ++ callPadding ++ paddedDescriptionLines
-  where tag = "*" ++ name ++ "*"
-        tagSpacing = replicate (78 - 3 - length tag) ' '
-        descriptionLines = linesWidth (78-30) description
-        argsStr = formatArgs args
-        functionCall = name ++ argsStr
-        paddedDescriptionLines = insertAfterNewlines (replicate 30 ' ') descriptionLines
-        callPadding =
-          if length functionCall < 30
-          then replicate (30 - length functionCall) ' '
-          else "\n" ++ replicate 30 ' '
-
-formatArgs [] = "()"
-formatArgs [x] = "( {" ++ x ++ "} )"
-formatArgs xs = "( " ++ concat (intersperse ", " (map (\x -> "{" ++ x ++ "}") xs)) ++ " )"
-
--- * Commands
-
-data CommandsLine
-  = CLEmpty
-  | CLComment String
-  | CLArguments String
-  | CLCommand String
-  deriving (Eq, Show)
-
-data DescribedCommand
-  = DescribedCommand
-  { dcName :: String
-  , dcArgs :: Maybe String
-  , dcDesc :: String
-  } deriving (Eq, Show)
-
-instance Ord DescribedCommand where
-  compare = comparing dcName
-
-parseCommandLine :: String -> CommandsLine
-parseCommandLine x =
-  case readP_to_S clCommandParser x of
-    [(clCommand, _)] -> clCommand
-    _ ->
-      case readP_to_S clArgumentsParser x of
-        [(clArguments, "")] -> clArguments
-        _ ->
-          case readP_to_S clCommentParser x of
-            [(clComment, "")] -> clComment
-            _ -> CLEmpty
-
-clCommentParser = do
-  char '"'
-  skipSpaces
-  comment <- many1 get
-  eof
-  return (CLComment comment)
-
+clArgumentsParser :: ReadP CommandsLine
 clArgumentsParser = do
   char '"'
   skipSpaces
   string "Arguments:"
-  skipSpaces
+  skipSpaces1
   arguments <- many1 get
   eof
   return (CLArguments arguments)
 
+clCommandParser :: ReadP CommandsLine
 clCommandParser = do
   string "command "
   skipSpaces
   many argParser
   comName <- nameParser
-  void (char ' ') +++ eof
+  spaceOrEof
   return (CLCommand comName)
   where argParser = do
           char '-'
@@ -158,93 +145,109 @@ clCommandParser = do
         nameParser = do
           first <- satisfy (`elem` ['A'..'Z'])
           rest <- many (satisfy (/= ' '))
-          peek <- look
           return (first:rest)
-        openParen = char '('
-        closeParen = char ')'
 
-
-clToDescribed :: [CommandsLine] -> [DescribedCommand]
-clToDescribed xs = fst $ foldl g ([],[],Nothing) xs
-  where g (res, _       , _   ) CLEmpty         = (res, [], Nothing)
-        g (res, comments, _   ) (CLComment c)   = (res, comments ++ [c], Nothing)
-        g (res, comments, _   ) (CLArguments a) = (res, comments, Just a)
-        g (res, comments, args) (CLCommand c)   = (res ++ [DescribedCommand c args (unwords comments)], [], Nothing)
-        fst (a,_,_) = a
-
-formatDescribedCommand (DescribedCommand name args description) =
-  tagSpacing ++ tag ++ "\n" ++ runCommand ++ callPadding ++ paddedDescriptionLines
-  where tag = "*:" ++ name ++ "*"
-        tagSpacing = replicate (78 - 3 - length tag) ' '
-        descriptionLines = linesWidth (78-30) description
-        runCommand = name ++ maybe "" (" " ++) args
-        paddedDescriptionLines = insertAfterNewlines (replicate 30 ' ') descriptionLines
-        callPadding =
-          if length runCommand < 30
-          then replicate (30 - length runCommand) ' '
-          else "\n" ++ replicate 30 ' '
-
--- * Syntax
-
-data SyntaxLine
-  = SLEmpty
-  | SLComment String
-  | SLSyntax String
-  deriving (Eq, Show)
-
-data DescribedSyntax
-  = DescribedSyntax
-  { dsName :: String
-  , dsDesc :: String
-  } deriving (Eq, Show)
-
-instance Ord DescribedSyntax where
-  compare = comparing dsName
-
-parseSyntaxLine :: String -> SyntaxLine
-parseSyntaxLine x =
-  case readP_to_S slSyntaxParser x of
-    [(slSyntax, _)] -> slSyntax
-    _ ->
-      case readP_to_S slCommentParser x of
-        [(slComment, "")] -> slComment
-        _ -> SLEmpty
-
-slCommentParser = do
-  char '"'
-  skipSpaces
-  comment <- many1 get
-  eof
-  return (SLComment comment)
-
+slSyntaxParser :: ReadP SyntaxLine
 slSyntaxParser = do
-  string "syntax "
-  skipSpaces
+  string "syntax"
+  skipSpaces1
   string "match" +++ string "keyword" +++ string "region"
-  char ' '
-  skipSpaces
+  skipSpaces1
   synName <- many1 (satisfy (/= ' '))
-  void (char ' ') +++ eof
+  spaceOrEof
   return (SLSyntax synName)
 
+skipSpaces1 :: ReadP ()
+skipSpaces1 = char ' ' >> skipSpaces
+
+spaceOrEof :: ReadP ()
+spaceOrEof = void (char ' ') +++ eof
+
+-- * Parse functions
+
+infixr 1 ?->
+(?->) ::  ReadP a -> (String -> a) -> String -> a
+x ?-> y = \ s ->
+  case readP_to_S x s of
+    [(z,_)] -> z
+    _ -> y s
+
+infixr 1 ?=>
+(?=>) ::  ReadP a -> a -> String -> a
+x ?=> y = x ?-> const y
+
+parseFunctionLine :: String -> FunctionsLine
+parseFunctionLine = flFunctionParser ?-> flCommentParser ?=> FLEmpty
+
+parseCommandLine :: String -> CommandsLine
+parseCommandLine = clCommandParser ?-> clArgumentsParser ?-> clCommentParser ?=> CLEmpty
+
+parseSyntaxLine :: String -> SyntaxLine
+parseSyntaxLine = slSyntaxParser ?-> slCommentParser ?=> SLEmpty
+
+-- * Line to described functions
+
+
+flToDescribed :: [FunctionsLine] -> [DescribedFunction]
+flToDescribed xs = fst $ foldl f ([],[]) xs
+  where f (res, _       ) FLEmpty           = (res, [])
+        f (res, comments) (FLComment c)     = (res, comments ++ [c])
+        f (res, comments) (FLFunction f as) = (res ++ [DescribedFunction f as (unwords comments)], [])
+
+clToDescribed :: [CommandsLine] -> [DescribedCommand]
+clToDescribed xs = fst $ foldl f ([],[],Nothing) xs
+  where f (res, _       , _   ) CLEmpty         = (res, [], Nothing)
+        f (res, comments, _   ) (CLComment c)   = (res, comments ++ [c], Nothing)
+        f (res, comments, _   ) (CLArguments a) = (res, comments, Just a)
+        f (res, comments, args) (CLCommand c)   = (res ++ [DescribedCommand c args (unwords comments)], [], Nothing)
+        fst (a,_,_) = a
+
 slToDescribed :: [SyntaxLine] -> [DescribedSyntax]
-slToDescribed xs = fst $ foldl g ([],[]) xs
-  where g (res, _       ) SLEmpty           = (res, [])
-        g (res, comments) (SLComment c)     = (res, comments ++ [c])
-        g (res, comments) (SLSyntax s) = (res ++ [DescribedSyntax s (unwords comments)], [])
+slToDescribed xs = fst $ foldl f ([],[]) xs
+  where f (res, _       ) SLEmpty       = (res, [])
+        f (res, comments) (SLComment c) = (res, comments ++ [c])
+        f (res, comments) (SLSyntax s)  = (res ++ [DescribedSyntax s (unwords comments)], [])
 
-formatDescribedSyntax (DescribedSyntax name description) =
-  tagSpacing ++ tag ++ "\n" ++ name ++ callPadding ++ paddedDescriptionLines
-  where tag = "*hl-" ++ name ++ "*"
-        tagSpacing = replicate (78 - 3 - length tag) ' '
-        descriptionLines = linesWidth (78-30) description
-        paddedDescriptionLines = insertAfterNewlines (replicate 30 ' ') descriptionLines
-        callPadding =
-          if length name < 30
-          then replicate (30 - length name) ' '
-          else "\n" ++ replicate 30 ' '
+-- * Formatters
 
--- * Generic stuff
+-- ** Specific
+
+dfToTriple :: DescribedFunction -> (String, String, String)
+dfToTriple (DescribedFunction name args desc) = (name, name ++ formatFunctionArgs args, desc)
+
+formatFunctionArgs :: [String] -> String
+formatFunctionArgs [] = "()"
+formatFunctionArgs [x] = "( {" ++ x ++ "} )"
+formatFunctionArgs xs = "( " ++ concat (intersperse ", " (map (\x -> "{" ++ x ++ "}") xs)) ++ " )"
+
+dcToTriple :: DescribedCommand -> (String, String, String)
+dcToTriple (DescribedCommand name args desc) = (name, name ++ maybe "" (' ':) args, desc)
+
+dsToTriple :: DescribedSyntax -> (String, String, String)
+dsToTriple (DescribedSyntax name desc) = (name, name, desc)
+
+-- ** General
+
+mkFormatter :: Int -> Int -> Int -> String -> String -> String -> String -> String
+mkFormatter width tagPad descPad tagPrefix tag name desc =
+  rightAlign width tagPad (mkTag tagPrefix tag) ++ "\n" ++ formatDescription width descPad name desc
+
+mkTag :: String -> String -> String
+mkTag prefix name = "*" ++ prefix ++ name ++ "*"
+
+rightAlign :: Int -> Int -> String -> String
+rightAlign width rPadding str = spaces lPadding ++ str ++ spaces rPadding
+  where lPadding = width - rPadding - length str
+        spaces = flip replicate ' '
+
+formatDescription :: Int -> Int -> String -> String -> String
+formatDescription width descPadding name desc = name ++ fstLinePadding ++ paddedDesc
+  where fstLinePadding =
+          if length name < descPadding
+          then replicate (descPadding - length name) ' '
+          else "\n" ++ replicate descPadding ' '
+        paddedDesc = insertAfterNewlines (replicate descPadding ' ') linedDesc
+        linedDesc = linesWidth (width - descPadding) desc
 
 insertAfterNewlines _ [] = []
 insertAfterNewlines insertme ('\n':str) = '\n' : (insertme ++ insertAfterNewlines insertme str)
