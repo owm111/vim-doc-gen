@@ -10,8 +10,14 @@ rec {
     buildInputs = [ ghc ];
     vimdocHs = ./vimdocs.hs;
     buildPhase = ''
-      ghc -o "$out" "$vimdocHs"
+      mkdir -p "$out/bin"
+      ghc -o "$out/bin/vim-doc-gen" "$vimdocHs"
     '';
     dontInstall = true;
+  };
+
+  shell = pkgs.mkShell {
+    inputsFrom = [ vimDocGen ];
+    buildInputs = [ vimDocGen ];
   };
 }
