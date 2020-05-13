@@ -1,8 +1,10 @@
 module Main where
 
+import Control.Exception
 import Control.Monad
 import Data.Char
 import Data.List
+import Data.List.Index
 import Data.Ord
 import System.Console.GetOpt
 import System.Environment
@@ -40,8 +42,10 @@ runCommand opts args
   | "syntax":rest    <- args = go rest parseSyntaxLine   slToDescribed "hl-" dsToTriple
   | "section":rest   <- args = fmtSection opts rest
   | "subsection":rest<- args = fmtSubsection opts rest
+  | "nosection":rest <- args = noSection opts rest
   | "modeline":rest  <- args = mkModeline opts rest
   | "header":rest    <- args = fmtHeader opts rest
+  | "file":rest      <- args = runOnFile opts rest
   | otherwise                = ioError $ userError $ "Invalid command!\n" ++ usage
   where
         parseF :: Ord described => (String -> line) -> ([line] -> [described])
@@ -317,7 +321,7 @@ insertAfterNewlines insertme (x:str) = x : insertAfterNewlines insertme str
 linesWidth width str =
   case remaining of
     []    -> this
-    ' ':_ -> this ++ "\n" ++ linesWidth width remaining
+    ' ':s -> this ++ "\n" ++ linesWidth width s
     _     -> reverse revBeforeSpace ++ "\n" ++ linesWidth width (reverse revAfterSpace ++ remaining)
   where (this, remaining) = splitAt width str
         (revAfterSpace, ' ':revBeforeSpace) = span (/= ' ') (reverse this)
@@ -336,6 +340,8 @@ generalSection c CLIOpts { optsTermWidth = width, optsTagPadding = pad } args =
 fmtSection = generalSection '='
 fmtSubsection = generalSection '-'
 
+noSection = generalSection ' '
+
 fmtHeader :: CLIOpts -> [String] -> IO String
 fmtHeader CLIOpts {} args =
   case args of
@@ -344,3 +350,77 @@ fmtHeader CLIOpts {} args =
 
 mkModeline :: CLIOpts -> [String] -> IO String
 mkModeline CLIOpts { optsTermWidth = tw } _ = return ("vim:ft=help:norl:ts=8:tw=" ++ show tw ++ ":")
+
+-- * File parser
+
+data DocFileLine = DFNormal String | DFCommand [String] deriving Show
+
+runOnFile :: CLIOpts -> [String] -> IO String
+runOnFile opts args = do
+  file <-
+    case args of
+      "-":_ -> getContents
+      [] -> getContents
+      file:_ -> readFile file
+  parseDocFile opts file >>= (return . unlines)
+
+parseDocFile :: CLIOpts -> String -> IO [String]
+parseDocFile opts@CLIOpts { optsTermWidth = width } content = imapM f parsed
+  where parsed = map (parseDfLine) (lines content)
+        f :: Int -> DocFileLine -> IO String
+        f _ (DFNormal x) = return (linesWidth width x)
+        f i (DFCommand xs) = runCommand opts xs `catch` handler i
+        handler :: Int -> IOException -> IO String  
+        handler i e = ioError (userError ("on line " ++ show (succ i) ++ ": \n" ++ displayException e))
+
+parseDfLine = dfCommandParser ?-> dfEscapedParser ?-> dfNormalParser ?=> DFNormal "stop"
+
+dfCommandParser = do
+  char '$'
+  skipSpaces1
+  argsStr <- many get
+  eof
+  return (DFCommand (splitArgs argsStr))
+
+dfEscapedParser = do
+  char '$'
+  char '$'
+  text <- many get
+  eof
+  return (DFNormal ('$':text))
+
+dfNormalParser = do
+  text <- many get
+  eof
+  return (DFNormal text)
+  where emptyLine = eof >> return ""
+        oneCharLine = do
+          c <- satisfy (/= '$')
+          eof
+          return [c]
+        escapedLine = do
+          char '$'
+          char '$'
+          text <- many get
+          return ('$':text)
+        regularLine = many get
+
+-- Borrowed from Cabal's Distribution.Simple.Setup
+splitArgs :: String -> [String]
+splitArgs = space []
+  where space :: String -> String -> [String]
+        space w [] = word w []
+        space w (c:s) | isSpace c = word w (space [] s)
+        space w ('"':s) = string w s
+        space w s = nonstring w s
+        string :: String -> String -> [String]
+        string w []      = word w []
+        string w ('"':s) = space w s
+        string w ('\\':'"':s) = string ('"':w) s
+        string w ( c :s) = string (c:w) s
+        nonstring :: String -> String -> [String]
+        nonstring w  []      = word w []
+        nonstring w  ('"':s) = string w s
+        nonstring w  ( c :s) = space (c:w) s
+        word [] s = s
+        word w  s = reverse w : s

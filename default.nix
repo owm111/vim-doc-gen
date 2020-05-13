@@ -1,7 +1,7 @@
 rec {
   pkgs = import <nixpkgs> {};
 
-  ghc = pkgs.ghc;
+  ghc = pkgs.haskellPackages.ghc.withPackages (p: [ p.ilist ]);
 
   vimDocGen = pkgs.stdenv.mkDerivation rec {
     name = "vim-doc-gen-testing";
