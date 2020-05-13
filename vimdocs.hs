@@ -1,6 +1,7 @@
 module Main where
 
 import Control.Monad
+import Data.Char
 import Data.List
 import Data.Ord
 import System.Console.GetOpt
