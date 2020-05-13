@@ -3,19 +3,16 @@ module Main where
 import Control.Monad
 import Data.List
 import Data.Ord
+import System.Console.GetOpt
 import System.Environment
+import System.Exit
 import System.IO
 import Text.ParserCombinators.ReadP
+import Text.Read (readMaybe)
 
 main :: IO ()
-main = do
-  args <- getArgs
-  case args of 
-    "functions":_ -> go parseFunctionLine flToDescribed "" dfToTriple
-    "commands":_  -> go parseCommandLine clToDescribed ":" dcToTriple
-    "syntax":_    -> go parseSyntaxLine slToDescribed "hl-" dsToTriple
-    _             -> hPutStrLn stderr "Wrong arguments!"
-  where go parse describe prefix triplify = getContents >>= (putStrLn . parseAndFormat 78 3 30 parse describe prefix triplify)
+main =
+  getArgs >>= getOptM RequireOrder options >>= handleOpts >>= uncurry runCommand >>= putStrLn
 
 parseAndFormat
   :: Ord described
@@ -28,9 +25,68 @@ parseAndFormat
   -> (described -> (String, String, String))
   -> String
   -> String
-parseAndFormat tw tagPad descPad parseLineF foldF tagPrefix prepareDesc file =
-  unlines (sort (map (formatF . prepareDesc) (foldF (map (parseLineF) (lines file)))))
+parseAndFormat tw tagPad descPad parseLineF foldF tagPrefix prepareDesc =
+  unlines . sort . map (formatF . prepareDesc) . foldF . map parseLineF . lines
   where formatF (x,y,z) = mkFormatter tw tagPad descPad tagPrefix x y z
+
+-- * CLI stuff
+
+runCommand :: CLIOpts -> [String] -> IO String
+runCommand opts args
+  | "help":_         <- args = return usage
+  | "functions":rest <- args = go rest parseFunctionLine flToDescribed ""    dfToTriple
+  | "commands":rest  <- args = go rest parseCommandLine  clToDescribed ":"   dcToTriple
+  | "syntax":rest    <- args = go rest parseSyntaxLine   slToDescribed "hl-" dsToTriple
+  | otherwise                = ioError $ userError $ "Invalid command!\n" ++ usage
+  where
+        parseF :: Ord described => (String -> line) -> ([line] -> [described])
+               -> String -> (described -> (String, String, String)) -> String -> String
+        parseF = parseAndFormat (optsTermWidth opts) (optsTagPadding opts) (optsDescPadding opts)
+        go args parse describe prefix triplify = do
+          file <-
+            case args of
+             "-":_  -> getContents
+             []     -> getContents
+             path:_ -> readFile path
+          return (parseF parse describe prefix triplify file)
+
+getOptM :: ArgOrder a -> [OptDescr a] -> [String] -> IO ([a], [String])
+getOptM argOrder optDescrs rawArgs
+  | null errs = return (opts, args)
+  | otherwise = ioError $ userError $ concat errs ++ usage
+  where (opts, args, errs) = getOpt argOrder optDescrs rawArgs
+
+handleOpts :: ([CLIOpts -> IO CLIOpts], [String]) -> IO (CLIOpts, [String])
+handleOpts (optFs, args) = fmap (\x -> (x, args)) (parseOpts optFs)
+
+parseOpts :: [CLIOpts -> IO CLIOpts] -> IO CLIOpts
+parseOpts = foldM (\x f -> f x) defaultCLIOpts
+
+data CLIOpts = CLIOpts
+  { optsTermWidth :: Int
+  , optsTagPadding :: Int
+  , optsDescPadding :: Int
+  } deriving Show
+
+defaultCLIOpts = CLIOpts 78 3 30
+
+usage = usageInfo usageHeader options
+
+usageHeader = "Usage:\n  vim-doc-gen [-wtd] <command> [file]\nOptions:"
+
+options :: [OptDescr (CLIOpts -> IO CLIOpts)]
+options =
+  [ Option ['w'] ["term-width"]
+    (ReqArg (f readMaybe (\old val -> old { optsTermWidth = val   }) "chars must be an integer!") "chars")
+    "Maximum width, like Vim's tw."
+  , Option ['t'] ["tag-padding"]
+    (ReqArg (f readMaybe (\old val -> old { optsTagPadding = val  }) "chars must be an integer!") "chars")
+    "Amount of spaces between tags and the right margin."
+  , Option ['d'] ["desc-padding"]
+    (ReqArg (f readMaybe (\old val -> old { optsDescPadding = val }) "chars must be an integer!") "chars")
+    "Amount descriptions should be indented."
+  ]
+  where f maybeF optF errMsg = \arg old -> maybe (ioError $ userError errMsg) (return . optF old) (maybeF arg)
 
 -- * Types
 
