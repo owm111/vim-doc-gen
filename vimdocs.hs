@@ -38,6 +38,10 @@ runCommand opts args
   | "functions":rest <- args = go rest parseFunctionLine flToDescribed ""    dfToTriple
   | "commands":rest  <- args = go rest parseCommandLine  clToDescribed ":"   dcToTriple
   | "syntax":rest    <- args = go rest parseSyntaxLine   slToDescribed "hl-" dsToTriple
+  | "section":rest   <- args = fmtSection opts rest
+  | "subsection":rest<- args = fmtSubsection opts rest
+  | "modeline":rest  <- args = mkModeline opts rest
+  | "header":rest    <- args = fmtHeader opts rest
   | otherwise                = ioError $ userError $ "Invalid command!\n" ++ usage
   where
         parseF :: Ord described => (String -> line) -> ([line] -> [described])
@@ -317,3 +321,26 @@ linesWidth width str =
     _     -> reverse revBeforeSpace ++ "\n" ++ linesWidth width (reverse revAfterSpace ++ remaining)
   where (this, remaining) = splitAt width str
         (revAfterSpace, ' ':revBeforeSpace) = span (/= ' ') (reverse this)
+
+-- * Format stuff
+
+generalSection :: Char -> CLIOpts -> [String] -> IO String
+generalSection c CLIOpts { optsTermWidth = width, optsTagPadding = pad } args =
+  case args of
+    [] -> ioError $ userError "Please two arguments!"
+    [x] -> go (map toUpper x)
+    _ -> go (map toUpper (concat (intersperse " " (init args))))
+  where tag = "*" ++ last args ++ "*"
+        go text = return $ replicate width c ++ "\n" ++ text ++ replicate (width - pad - length text - length tag) ' ' ++ tag ++ replicate pad ' '
+
+fmtSection = generalSection '='
+fmtSubsection = generalSection '-'
+
+fmtHeader :: CLIOpts -> [String] -> IO String
+fmtHeader CLIOpts {} args =
+  case args of
+    [fileName, version, date] -> return ("*" ++ fileName ++ "*\tFor Vim version " ++ version ++ "\tLast change: " ++ date)
+    _ -> ioError $ userError "Requires exactly three arguments: file name, required version, and latst change date."
+
+mkModeline :: CLIOpts -> [String] -> IO String
+mkModeline CLIOpts { optsTermWidth = tw } _ = return ("vim:ft=help:norl:ts=8:tw=" ++ show tw ++ ":")
